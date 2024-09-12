@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -62,21 +63,19 @@ func generateNewVariableName(environment, variableName string) string {
 
 // generateVariableNameMap generates a map from old variable names to new variable names
 func generateVariableNameMap(environment string) map[string]string {
-	//serverlessParams := []string{
-	//	"REDISCLOUD_URL", "REDIS_ENABLED_TLS", "REDIS_DB", "LOG_LEVEL", "JAWSDB_URL",
-	//	"MYSQL_HOST", "MYSQL_PORT", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DB",
-	//	"MYSQL_MAX_OPEN_CONNS", "MYSQL_MAX_IDLE_CONNS", "MYSQL_CONN_MAX_LIFETIME",
-	//	"JAWSDB_REPLICATION_URL", "MYSQL_REPLICATION_HOST", "MYSQL_REPLICATION_PORT",
-	//	"MYSQL_REPLICATION_USER", "MYSQL_REPLICATION_PASSWORD", "MYSQL_REPLICATION_DB",
-	//	"MYSQL_REPLICATION_MAX_OPEN_CONNS", "MYSQL_REPLICATION_MAX_IDLE_CONNS",
-	//	"MYSQL_REPLICATION_CONN_MAX_LIFETIME", "DD_API_KEY", "DD_SITE", "DD_ENV",
-	//	"DD_SERVERLESS_LOGS_ENABLED", "DD_MERGE_XRAY_TRACES", "DD_TRACE_ENABLED",
-	//	"ACCPLUS_BASE_URL",
-	//}
-
 	serverlessParams := []string{
-		"REDISCLOUD_URL",
+		"REDISCLOUD_URL", "REDIS_ENABLED_TLS", "REDIS_DB", "LOG_LEVEL", "JAWSDB_URL",
+		"MYSQL_HOST", "MYSQL_PORT", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DB",
+		"MYSQL_MAX_OPEN_CONNS", "MYSQL_MAX_IDLE_CONNS", "MYSQL_CONN_MAX_LIFETIME",
+		"JAWSDB_REPLICATION_URL", "MYSQL_REPLICATION_HOST", "MYSQL_REPLICATION_PORT",
+		"MYSQL_REPLICATION_USER", "MYSQL_REPLICATION_PASSWORD", "MYSQL_REPLICATION_DB",
+		"MYSQL_REPLICATION_MAX_OPEN_CONNS", "MYSQL_REPLICATION_MAX_IDLE_CONNS",
+		"MYSQL_REPLICATION_CONN_MAX_LIFETIME", "DD_API_KEY", "DD_SITE",
 	}
+
+	// serverlessParams := []string{
+	// 	"REDISCLOUD_URL",
+	// }
 
 	variableNameMap := make(map[string]string)
 	for _, param := range serverlessParams {
@@ -131,6 +130,11 @@ func copyParameter(client *ssm.Client, sourceName, destName string) error {
 
 	err = putParameter(client, destName, description, sourceParam)
 	if err != nil {
+		var parameterAlreadyExists *types.ParameterAlreadyExists
+		if errors.As(err, &parameterAlreadyExists) {
+			fmt.Printf("Parameter %v already exists, skipping\n", destName)
+			return nil
+		}
 		return fmt.Errorf("failed to put destination parameter: %v", err)
 	}
 	fmt.Printf("Success copied parameter from %v to %v\n", sourceName, destName)
