@@ -71,6 +71,13 @@ func generateVariableNameMap(environment string) map[string]string {
 		"MYSQL_REPLICATION_USER", "MYSQL_REPLICATION_PASSWORD", "MYSQL_REPLICATION_DB",
 		"MYSQL_REPLICATION_MAX_OPEN_CONNS", "MYSQL_REPLICATION_MAX_IDLE_CONNS",
 		"MYSQL_REPLICATION_CONN_MAX_LIFETIME", "DD_API_KEY", "DD_SITE",
+		"ERP_BASIC_AUTH_USER_NAME", "ERP_BASIC_AUTH_PASSWORD", "ERP_BASE_URL",
+		"ERP_REQUEST_TIME_OUT", "CACHE_CONTRACT_EXPIRATION_TIME", "NAVIS_BASIC_AUTH_USER_NAME",
+		"NAVIS_BASIC_AUTH_PASSWORD", "NAVIS_BASE_URL", "NAVIS_PROXY_URL", "DD_API_KEY",
+		"DD_API_URL", "DD_SITE", "ROLLBAR_TOKEN", "NOTIFIER_ENGINE", "APP_ROOT_FILE_MANAGEMENT_SYSTEM",
+		"S3_Bucket", "KMS_CMK_KEY_ID", "RECAL_LAMBDA_CONCURRENCY_MAX",
+		"RECALC_YEARLY_CLOSING_BATCH_SIZE", "DATA_SCANNER_SLACK_CHANNEL", "DATA_SCANNER_WEBHOOK_URL",
+		"DATA_SCANNER_SLACK_CHANNEL", "DATA_SCANNER_WEBHOOK_URL",
 	}
 
 	// serverlessParams := []string{
@@ -118,13 +125,14 @@ func putParameter(client *ssm.Client, name, description string, dest *types.Para
 
 func copyParameter(client *ssm.Client, sourceName, destName string) error {
 	fmt.Printf(" =====================\n")
+	fmt.Printf("start copy parameter sourceName: %v == destName: %v\n", sourceName, destName)
 	sourceParam, err := getParameterDetails(client, sourceName)
 	if err != nil {
-		return fmt.Errorf("failed to get source parameter details: %v", err)
+		return fmt.Errorf("[FAILED] to get source parameter details: %v", err)
 	}
 	description, err := getParameterDescription(client, sourceName)
 	if err != nil {
-		return fmt.Errorf("failed to get source parameter description: %v", err)
+		return fmt.Errorf("[FAILED] to get source parameter description: %v", err)
 	}
 	fmt.Printf("name: %v, value: %v, type: %v, description: %v \n", *sourceParam.Name, *sourceParam.Value, *&sourceParam.Type, description)
 
@@ -132,17 +140,17 @@ func copyParameter(client *ssm.Client, sourceName, destName string) error {
 	if err != nil {
 		var parameterAlreadyExists *types.ParameterAlreadyExists
 		if errors.As(err, &parameterAlreadyExists) {
-			fmt.Printf("Parameter %v already exists, skipping\n", destName)
+			fmt.Printf("[DUPLICATED] Parameter %v already exists, skipping\n", destName)
 			return nil
 		}
 		return fmt.Errorf("failed to put destination parameter: %v", err)
 	}
-	fmt.Printf("Success copied parameter from %v to %v\n", sourceName, destName)
+	fmt.Printf("[SUCCESS] copied parameter from %v to %v\n", sourceName, destName)
 	return nil
 }
 
 func main() {
-	environemnt := "staging" // or "production" or beta
+	environemnt := "beta" // or "production" or beta or staging
 	profile := "aa_stg"
 
 	if environemnt == "production" {
@@ -163,7 +171,7 @@ func main() {
 	oldToNewEnvName := generateVariableNameMap(environemnt)
 
 	for oldEnvName, newEnName := range oldToNewEnvName {
-		fmt.Printf("oldName: %v == newName: %v\n", oldEnvName, newEnName)
+		// fmt.Printf("oldName: %v == newName: %v\n", oldEnvName, newEnName)
 		// details, err := getParameterDetails(client, oldEnvName)
 		// if err != nil {
 		// 	log.Fatalf("failed to get parameter details, %v", err)
