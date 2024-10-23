@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -12,6 +16,31 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
 
+type Flags struct {
+	Environment            string
+	AwsProfile             string
+	IsCloneLambdaParameter bool
+	IsGetAllParameter      bool
+	PrefixGetAllParameter  string
+}
+
+// handleFlags handles the command line flags
+func handleFlags() Flags {
+	environment := flag.String("environment", "beta", "Environment to use (e.g., production, beta, staging)")
+	awsProfile := flag.String("aws_profile", "aa_stg", "AWS awsProfile to use")
+	isCloneLambdaParameter := flag.Bool("is_clone_lambda_parameter", false, "Clone lambda parameter")
+	isGetAllParameter := flag.Bool("is_get_all_parameter", false, "Get all parameter")
+	prefixGetAllParameter := flag.String("prefix_get_all_parameter", "/asset-accounting/", "Get all parameter with prefix")
+	flag.Parse()
+
+	*prefixGetAllParameter = fmt.Sprintf("%v%v", *prefixGetAllParameter, *environment)
+
+	flags := Flags{Environment: *environment, AwsProfile: *awsProfile,
+		IsCloneLambdaParameter: *isCloneLambdaParameter, IsGetAllParameter: *isGetAllParameter,
+		PrefixGetAllParameter: *prefixGetAllParameter}
+	fmt.Printf("flags: %+v\n", flags)
+	return flags
+}
 func getAllParameters(client *ssm.Client) ([]types.ParameterMetadata, error) {
 	var parameters []types.ParameterMetadata
 	input := &ssm.DescribeParametersInput{}
@@ -22,7 +51,6 @@ func getAllParameters(client *ssm.Client) ([]types.ParameterMetadata, error) {
 			return nil, err
 		}
 		parameters = append(parameters, page.Parameters...)
-		break
 	}
 	return parameters, nil
 }
@@ -149,26 +177,8 @@ func copyParameter(client *ssm.Client, sourceName, destName string) error {
 	return nil
 }
 
-func main() {
-	environemnt := "beta" // or "production" or beta or staging
-	profile := "aa_stg"
-
-	if environemnt == "production" {
-		profile = "aa_prod"
-	}
-
-	client, err := connectToAWSByProfile(profile)
-	if err != nil {
-		log.Fatalf("failed to connect to AWS, %v", err)
-	}
-
-	// Example usage
-	//params, err := getAllParameters(client)
-	//if err != nil {
-	//	log.Fatalf("failed to get parameters, %v", err)
-	//}
-
-	oldToNewEnvName := generateVariableNameMap(environemnt)
+func cloneLambdaParameter(client *ssm.Client, flags Flags) error {
+	oldToNewEnvName := generateVariableNameMap(flags.Environment)
 
 	for oldEnvName, newEnName := range oldToNewEnvName {
 		// fmt.Printf("oldName: %v == newName: %v\n", oldEnvName, newEnName)
@@ -178,9 +188,76 @@ func main() {
 		// }
 		// fmt.Printf("name: %v, value: %v, type: %v, description: %v \n", *details.Name, *details.Value, *&details.Type)
 
-		err = copyParameter(client, oldEnvName, newEnName)
+		err := copyParameter(client, oldEnvName, newEnName)
 		if err != nil {
 			log.Fatalf("failed to copy parameter, %v", err)
 		}
+	}
+	return nil
+}
+
+// saveDataToFile saves the given data to the specified file path as a JSON file.
+func saveDataToFile(data map[string]interface{}, filePath string) {
+	file, err := os.Create(filePath)
+	if err != nil {
+		log.Fatalf("failed to create file, %v", err)
+	}
+	defer file.Close()
+
+	encodedData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		log.Fatalf("failed to encode data to JSON, %v", err)
+	}
+
+	if _, err := file.Write(encodedData); err != nil {
+		log.Fatalf("failed to write data to file, %v", err)
+	}
+}
+
+func main() {
+	flags := handleFlags()
+
+	client, err := connectToAWSByProfile(flags.AwsProfile)
+	if err != nil {
+		log.Fatalf("failed to connect to AWS, %v", err)
+	}
+	if flags.IsCloneLambdaParameter {
+		fmt.Println("Start clone lambda parameter")
+		err := cloneLambdaParameter(client, flags)
+		if err != nil {
+			log.Fatalf("failed to clone lambda parameter, %v", err)
+		}
+	}
+	if flags.IsGetAllParameter {
+		fmt.Println("Start get all parameter")
+		savedDataList := map[string]interface{}{}
+		params, err := getAllParameters(client)
+		if err != nil {
+			log.Fatalf("failed to get parameters, %v", err)
+		}
+		for _, param := range params {
+			data := ""
+			if param.Name == nil {
+				data = fmt.Sprintf("%v, name: %v", data, param.Name)
+			}
+			if param.Type != "" {
+				data = fmt.Sprintf("%v, type: %v", data, *&param.Type)
+			}
+			if param.Description != nil {
+				data = fmt.Sprintf("%v, description: %v", data, *param.Description)
+			}
+			if strings.HasPrefix(*param.Name, flags.PrefixGetAllParameter) {
+				fmt.Println(data)
+				if paramDetail, err := getParameterDetails(client, *param.Name); err == nil {
+					savedDataList[*param.Name] = paramDetail.Value
+				} else {
+					fmt.Errorf("failed to get source parameter details: %v", err)
+				}
+			} else {
+				fmt.Printf("[NotInPrefix] prefix:%v == data: %v", flags.PrefixGetAllParameter, data)
+			}
+		}
+		filePath := fmt.Sprintf("allParameters_%v.json", flags.Environment)
+		saveDataToFile(savedDataList, filePath)
 	}
 }
