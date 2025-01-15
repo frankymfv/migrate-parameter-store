@@ -22,28 +22,39 @@ type Flags struct {
 	IsCloneLambdaParameter bool
 	IsGetAllParameter      bool
 	PrefixGetAllParameter  string
+	NewEnvName             string
+	IsRemoveAllParameter   bool
 }
 
 // handleFlags handles the command line flags
 func handleFlags() Flags {
-	environment := flag.String("environment", "beta", "Environment to use (e.g., production, beta, staging)")
-	awsProfile := flag.String("aws_profile", "aa_stg", "AWS awsProfile to use")
+	environment := flag.String("environment", "staging", "Environment to use (e.g., production, beta, staging)")
+	newEnvName := flag.String("new_env_name", "stg", "Environment to use (e.g., production, beta, staging)")
+	awsProfile := flag.String("aws_profile", "aa-be-stg", "AWS awsProfile to use")
 	isCloneLambdaParameter := flag.Bool("is_clone_lambda_parameter", false, "Clone lambda parameter")
 	isGetAllParameter := flag.Bool("is_get_all_parameter", false, "Get all parameter")
-	prefixGetAllParameter := flag.String("prefix_get_all_parameter", "/asset-accounting/", "Get all parameter with prefix")
+	prefixGetAllParameter := flag.String("prefix_get_all_parameter", "/asset-accounting", "Get all parameter with prefix")
+	isRemoveAllParameter := flag.Bool("is_remove_all_parameter", false, "Remove all parameter")
 	flag.Parse()
 
-	*prefixGetAllParameter = fmt.Sprintf("%v%v", *prefixGetAllParameter, *environment)
+	*prefixGetAllParameter = fmt.Sprintf("%v/serviceplatform/%v", *prefixGetAllParameter, *environment)
 
 	flags := Flags{Environment: *environment, AwsProfile: *awsProfile,
 		IsCloneLambdaParameter: *isCloneLambdaParameter, IsGetAllParameter: *isGetAllParameter,
-		PrefixGetAllParameter: *prefixGetAllParameter}
+		PrefixGetAllParameter: *prefixGetAllParameter, NewEnvName: *newEnvName, IsRemoveAllParameter: *isRemoveAllParameter}
 	fmt.Printf("flags: %+v\n", flags)
 	return flags
 }
-func getAllParameters(client *ssm.Client) ([]types.ParameterMetadata, error) {
+func getAllParameters(client *ssm.Client, targetEnv string) ([]types.ParameterMetadata, error) {
 	var parameters []types.ParameterMetadata
-	input := &ssm.DescribeParametersInput{}
+	input := &ssm.DescribeParametersInput{
+		Filters: []types.ParametersFilter{
+			{
+				Key:    types.ParametersFilterKeyName,
+				Values: []string{fmt.Sprintf("/asset-accounting/serviceplatform/%v/", targetEnv)},
+			},
+		},
+	}
 	paginator := ssm.NewDescribeParametersPaginator(client, input)
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(context.TODO())
@@ -79,48 +90,6 @@ func connectToAWSByProfile(profile string) (*ssm.Client, error) {
 	return client, nil
 }
 
-// generateOldVariableName generates a variable name in the old format /asset-accounting/{environment}/{variableName}
-func generateOldVariableName(environment, variableName string) string {
-	return fmt.Sprintf("/asset-accounting/%s/%s", environment, variableName)
-}
-
-// generateNewVariableName generates a variable name in the new format /asset-accounting/serviceplatform/{environment}/{variableName}
-func generateNewVariableName(environment, variableName string) string {
-	return fmt.Sprintf("/asset-accounting/serviceplatform/%s/%s", environment, variableName)
-}
-
-// generateVariableNameMap generates a map from old variable names to new variable names
-func generateVariableNameMap(environment string) map[string]string {
-	serverlessParams := []string{
-		"REDISCLOUD_URL", "REDIS_ENABLED_TLS", "REDIS_DB", "LOG_LEVEL", "JAWSDB_URL",
-		"MYSQL_HOST", "MYSQL_PORT", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DB",
-		"MYSQL_MAX_OPEN_CONNS", "MYSQL_MAX_IDLE_CONNS", "MYSQL_CONN_MAX_LIFETIME",
-		"JAWSDB_REPLICATION_URL", "MYSQL_REPLICATION_HOST", "MYSQL_REPLICATION_PORT",
-		"MYSQL_REPLICATION_USER", "MYSQL_REPLICATION_PASSWORD", "MYSQL_REPLICATION_DB",
-		"MYSQL_REPLICATION_MAX_OPEN_CONNS", "MYSQL_REPLICATION_MAX_IDLE_CONNS",
-		"MYSQL_REPLICATION_CONN_MAX_LIFETIME", "DD_API_KEY", "DD_SITE",
-		"ERP_BASIC_AUTH_USER_NAME", "ERP_BASIC_AUTH_PASSWORD", "ERP_BASE_URL",
-		"ERP_REQUEST_TIME_OUT", "CACHE_CONTRACT_EXPIRATION_TIME", "NAVIS_BASIC_AUTH_USER_NAME",
-		"NAVIS_BASIC_AUTH_PASSWORD", "NAVIS_BASE_URL", "NAVIS_PROXY_URL", "DD_API_KEY",
-		"DD_API_URL", "DD_SITE", "ROLLBAR_TOKEN", "NOTIFIER_ENGINE", "APP_ROOT_FILE_MANAGEMENT_SYSTEM",
-		"S3_Bucket", "KMS_CMK_KEY_ID", "RECAL_LAMBDA_CONCURRENCY_MAX",
-		"RECALC_YEARLY_CLOSING_BATCH_SIZE", "DATA_SCANNER_SLACK_CHANNEL", "DATA_SCANNER_WEBHOOK_URL",
-		"DATA_SCANNER_SLACK_CHANNEL", "DATA_SCANNER_WEBHOOK_URL",
-	}
-
-	// serverlessParams := []string{
-	// 	"REDISCLOUD_URL",
-	// }
-
-	variableNameMap := make(map[string]string)
-	for _, param := range serverlessParams {
-		oldName := generateOldVariableName(environment, param)
-		newName := generateNewVariableName(environment, param)
-		variableNameMap[oldName] = newName
-	}
-	return variableNameMap
-}
-
 func getParameterDescription(client *ssm.Client, name string) (string, error) {
 	input := &ssm.DescribeParametersInput{
 		ParameterFilters: []types.ParameterStringFilter{
@@ -151,20 +120,22 @@ func putParameter(client *ssm.Client, name, description string, dest *types.Para
 	return err
 }
 
-func copyParameter(client *ssm.Client, sourceName, destName string) error {
+func copyParameter(client *ssm.Client, sourceParam types.ParameterMetadata, destName string) error {
 	fmt.Printf(" =====================\n")
-	fmt.Printf("start copy parameter sourceName: %v == destName: %v\n", sourceName, destName)
-	sourceParam, err := getParameterDetails(client, sourceName)
+	fmt.Printf("start copy parameter sourceName: %v == destName: %v\n", *sourceParam.Name, destName)
+	sourceData, err := getParameterDetails(client, *sourceParam.Name)
 	if err != nil {
 		return fmt.Errorf("[FAILED] to get source parameter details: %v", err)
 	}
-	description, err := getParameterDescription(client, sourceName)
-	if err != nil {
-		return fmt.Errorf("[FAILED] to get source parameter description: %v", err)
-	}
-	fmt.Printf("name: %v, value: %v, type: %v, description: %v \n", *sourceParam.Name, *sourceParam.Value, *&sourceParam.Type, description)
 
-	err = putParameter(client, destName, description, sourceParam)
+	description := ""
+	if sourceParam.Description != nil {
+		description = *sourceParam.Description
+	}
+
+	fmt.Printf("name: %v, value: %v, type: %v, description: %v \n", *sourceParam.Name, *sourceData.Value, *&sourceParam.Type, description)
+
+	err = putParameter(client, destName, description, sourceData)
 	if err != nil {
 		var parameterAlreadyExists *types.ParameterAlreadyExists
 		if errors.As(err, &parameterAlreadyExists) {
@@ -173,27 +144,59 @@ func copyParameter(client *ssm.Client, sourceName, destName string) error {
 		}
 		return fmt.Errorf("failed to put destination parameter: %v", err)
 	}
-	fmt.Printf("[SUCCESS] copied parameter from %v to %v\n", sourceName, destName)
+	fmt.Printf("[SUCCESS] copied parameter from %v to %v\n", *sourceParam.Name, destName)
 	return nil
 }
 
-func cloneLambdaParameter(client *ssm.Client, flags Flags) error {
-	oldToNewEnvName := generateVariableNameMap(flags.Environment)
+func generateNewVariableNameForEnvStandard(sourceParamName, environment, newEnvName string) string {
+	// e.g., /asset-accounting/serviceplatform/staging/REDIS_URL => /asset-accounting/serviceplatform/stg/REDIS_URL
+	// e.g., /asset-accounting/serviceplatform/production/REDIS_URL => /asset-accounting/serviceplatform/prod/REDIS_URL
+	return strings.Replace(sourceParamName, environment, newEnvName, -1)
+}
 
-	for oldEnvName, newEnName := range oldToNewEnvName {
-		// fmt.Printf("oldName: %v == newName: %v\n", oldEnvName, newEnName)
-		// details, err := getParameterDetails(client, oldEnvName)
-		// if err != nil {
-		// 	log.Fatalf("failed to get parameter details, %v", err)
-		// }
-		// fmt.Printf("name: %v, value: %v, type: %v, description: %v \n", *details.Name, *details.Value, *&details.Type)
-
-		err := copyParameter(client, oldEnvName, newEnName)
+func convertEnvNameToEnvStandardNameOfParameter(client *ssm.Client, flags Flags) error {
+	params, err := getAllParameters(client, flags.Environment)
+	if err != nil {
+		log.Fatalf("failed to get parameters, %v", err)
+	}
+	for _, param := range params {
+		if param.Name == nil {
+			continue
+		}
+		newParamName := generateNewVariableNameForEnvStandard(*param.Name, flags.Environment, flags.NewEnvName)
+		err := copyParameter(client, param, newParamName)
 		if err != nil {
 			log.Fatalf("failed to copy parameter, %v", err)
+			return err
 		}
 	}
 	return nil
+}
+
+func removeAllParameters(client *ssm.Client, targetEnv string) error {
+	params, err := getAllParameters(client, "stg")
+	if err != nil {
+		return err
+	}
+	for _, param := range params {
+		if param.Name == nil {
+			continue
+		}
+		fmt.Println("Removing parameter: ", *param.Name)
+		err := removeParameter(client, *param.Name)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeParameter(client *ssm.Client, name string) error {
+	input := &ssm.DeleteParameterInput{
+		Name: aws.String(name),
+	}
+	_, err := client.DeleteParameter(context.TODO(), input)
+	return err
 }
 
 // saveDataToFile saves the given data to the specified file path as a JSON file.
@@ -221,9 +224,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to connect to AWS, %v", err)
 	}
+	if flags.IsRemoveAllParameter {
+		fmt.Println("Start remove all parameter")
+		err := removeAllParameters(client, flags.Environment)
+		if err != nil {
+			log.Fatalf("failed to remove all parameters, %v", err)
+			return
+		}
+	}
+
 	if flags.IsCloneLambdaParameter {
 		fmt.Println("Start clone lambda parameter")
-		err := cloneLambdaParameter(client, flags)
+		// err := cloneLambdaParameter(client, flags)
+		err := convertEnvNameToEnvStandardNameOfParameter(client, flags)
 		if err != nil {
 			log.Fatalf("failed to clone lambda parameter, %v", err)
 		}
@@ -231,7 +244,7 @@ func main() {
 	if flags.IsGetAllParameter {
 		fmt.Println("Start get all parameter")
 		savedDataList := map[string]interface{}{}
-		params, err := getAllParameters(client)
+		params, err := getAllParameters(client, flags.Environment)
 		if err != nil {
 			log.Fatalf("failed to get parameters, %v", err)
 		}
@@ -254,7 +267,7 @@ func main() {
 					fmt.Errorf("failed to get source parameter details: %v", err)
 				}
 			} else {
-				fmt.Printf("[NotInPrefix] prefix:%v == data: %v", flags.PrefixGetAllParameter, data)
+				fmt.Printf("[NotInPrefix] prefix:%v == data: %v\n\n", flags.PrefixGetAllParameter, data)
 			}
 		}
 		filePath := fmt.Sprintf("allParameters_%v.json", flags.Environment)
