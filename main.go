@@ -174,7 +174,7 @@ func convertEnvNameToEnvStandardNameOfParameter(client *ssm.Client, flags Flags)
 }
 
 func removeAllParameters(client *ssm.Client, targetEnv string) error {
-	params, err := getAllParameters(client, "stg")
+	params, err := getAllParameters(client, targetEnv)
 	if err != nil {
 		return err
 	}
