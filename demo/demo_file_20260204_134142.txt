@@ -1,0 +1,6 @@
+Demo File Created by GitHub App
+    
+Created at: 2026-02-04T13:41:44.959475
+Branch: feature/demo-pr-20260204_134142
+
+This is a demonstration file created to test GitHub App functionality.
